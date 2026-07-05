@@ -2,6 +2,10 @@
 // No requiere dependencias: usa fetch nativo de Node (>=18).
 
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "qwen3:8b";
+// Ventana de contexto. El default de Ollama (4096) trunca el prompt de hipotesis
+// (codigo del repo + stacktrace) y degrada la salida. 16384 cubre el peor caso
+// (cap de ~40KB de codigo en repo.js) y mantiene qwen3:8b 100% en GPU (~7.3 GB).
+const OLLAMA_NUM_CTX = Number(process.env.OLLAMA_NUM_CTX || 16384);
 
 // Normaliza el host: acepta valores tipo "0.0.0.0:11434" o "localhost:11434"
 // (formato que exporta el propio Ollama) y les anade esquema/host conectable.
@@ -33,6 +37,7 @@ export async function chat(messages, opts = {}) {
     think: false,
     options: {
       temperature: opts.temperature ?? 0.2,
+      num_ctx: OLLAMA_NUM_CTX,
     },
   };
 
