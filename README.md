@@ -65,11 +65,16 @@ Muestra la cantidad de informes generados y, por cada uno, el nombre de la API
 fila se ve la **causa más probable** (la de mayor `confidence`), el **plan de
 acción** y un botón **«Implementar fix»**.
 
-El botón registra la **decisión** de implementar el fix del informe (queda
-persistida en el propio `.json` bajo `implementation`). Hoy es un *scaffold*: el
-caso de uso (`implement.js`) todavía **no lleva a cabo** la implementación real
-(generar el parche y abrir un PR); eso llega en una próxima iteración. Ver el
-roadmap en `rca-lab/docs/ESTADO.md § Próximos pasos`.
+Al pulsar **«Implementar fix»** el agente **genera el parche** del bug: clona el
+repo del informe, le pide al LLM el archivo corregido y aplica el cambio. Por
+defecto (sin `GITHUB_TOKEN`) corre en **dry-run** y muestra el **diff propuesto**
+sin tocar el remoto. Con un `GITHUB_TOKEN` con permiso de PR, **crea una rama,
+commitea, hace push y abre un Pull Request** (con revisión humana; **nunca**
+auto-merge). El resultado (diff o enlace al PR) queda persistido en el informe.
+
+Requiere que el informe tenga **contexto de código** (`code_context.repo`), es
+decir, que el incidente venga de un servicio instrumentado que publique
+`vcs.repository.url.full`. Si no, el caso de uso responde `status: "skipped"`.
 
 | Variable         | Por defecto | Descripción                       |
 |------------------|-------------|-----------------------------------|
@@ -80,10 +85,20 @@ Endpoints del dashboard:
 
 - `GET /` — el dashboard (HTML).
 - `GET /api/reports` — resumen JSON de los informes, ordenado por fecha desc.
-- `POST /api/reports/{id}/implement` — caso de uso «implementar fix»: registra la
-  decisión en el informe y devuelve su estado. Hoy responde `status: "pending"`
-  (la ejecución real llega más adelante). `id` es el nombre de fichero del informe;
-  se valida contra path traversal.
+- `POST /api/reports/{id}/implement` — caso de uso «implementar fix»: genera el
+  parche y (con token) abre un PR. Devuelve `status` (`dry_run` | `pr_opened` |
+  `skipped` | `failed`) y persiste el resultado en el informe. `id` es el nombre de
+  fichero del informe; se valida contra path traversal.
+
+### Variables del caso de uso «implementar fix»
+
+| Variable            | Por defecto          | Descripción                                             |
+|---------------------|----------------------|---------------------------------------------------------|
+| `GITHUB_TOKEN` / `GH_TOKEN` | *(vacío)*    | Token con permiso de PR. Sin él → **dry-run** (solo diff). |
+| `IMPLEMENT_DRY_RUN` | *(vacío)*            | `1`/`true` fuerza dry-run aunque haya token.            |
+| `REPO_ALLOWED_HOSTS`| `github.com`         | Hosts permitidos para clonar/abrir PR.                  |
+| `FIX_WORKDIR`       | `./work-fix`         | Carpeta donde se clona el repo para el fix.             |
+| `FIX_GIT_NAME` / `FIX_GIT_EMAIL` | `ai-sre-agent` / `ai-sre-agent@localhost` | Autor del commit del fix. |
 
 ## Respuesta
 
