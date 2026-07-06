@@ -150,11 +150,42 @@
     }
     button.impl-btn:hover { filter: brightness(1.08); }
     button.impl-btn:disabled { opacity: .55; cursor: default; }
+    .impl-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
     .impl-status { color: var(--muted); font-size: .85rem; }
     .impl-status[data-state="pending"]   { color: var(--sev-medium); }
     .impl-status[data-state="sending"]   { color: var(--accent); }
+    .impl-status[data-state="dry_run"]   { color: var(--sev-medium); }
+    .impl-status[data-state="skipped"]   { color: var(--muted); }
     .impl-status[data-state="failed"]    { color: var(--sev-critical); }
     .impl-status[data-state="pr_opened"] { color: var(--sev-low); }
+    .impl-detail:empty { display: none; }
+    .impl-detail { margin-top: 10px; }
+    .pr-link {
+      display: inline-block;
+      color: var(--sev-low);
+      font-weight: 600;
+      font-size: .88rem;
+      text-decoration: none;
+      border: 1px solid var(--sev-low);
+      border-radius: 8px;
+      padding: 6px 12px;
+    }
+    .pr-link:hover { background: rgba(78,203,141,.12); }
+    pre.diff {
+      margin: 8px 0 0;
+      padding: 12px 14px;
+      background: #0b0d13;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow-x: auto;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: .8rem;
+      line-height: 1.45;
+      white-space: pre;
+      max-height: 360px;
+    }
+    pre.diff .add { color: #4ecb8d; }
+    pre.diff .del { color: #f0506e; }
     .empty, .error {
       text-align: center;
       padding: 48px 20px;
@@ -240,18 +271,54 @@
         </div>`;
     }
 
-    // Botón para decidir implementar el fix. La ejecución real llega más adelante;
-    // hoy el endpoint registra la decisión y responde su estado ("pending").
+    // Bloque del botón "implementar fix" + estado + detalle (diff o enlace al PR).
     function implHtml(r) {
       const im = r.implementation;
-      const state = im && im.status ? im.status : "";
-      const msg = im
-        ? esc(im.message || ("Estado: " + im.status))
-        : "Registra la decisión de implementar el fix. La ejecución automática llegará en una próxima iteración.";
-      return `<div class="implement">
-          <button type="button" class="impl-btn" data-id="${esc(r.id)}">Implementar fix</button>
-          <span class="impl-status" data-state="${esc(state)}">${msg}</span>
+      return `<div class="implement" data-id="${esc(r.id)}">
+          <div class="impl-actions">
+            <button type="button" class="impl-btn">Implementar fix</button>
+            <span class="impl-status" data-state="${esc(im && im.status || "")}">${esc(implMsg(im))}</span>
+          </div>
+          <div class="impl-detail">${implDetailHtml(im)}</div>
         </div>`;
+    }
+
+    function implMsg(im) {
+      return im
+        ? (im.message || ("Estado: " + im.status))
+        : "Registra la decisión de implementar el fix: genera el parche y, si hay token, abre un PR (con revisión humana).";
+    }
+
+    // Detalle: enlace al PR (si se abrió) y/o el diff propuesto (dry-run).
+    function implDetailHtml(im) {
+      if (!im || !im.fix) return "";
+      const fix = im.fix;
+      let html = "";
+      if (fix.pr_url) {
+        html += `<a class="pr-link" href="${esc(fix.pr_url)}" target="_blank" rel="noopener">Ver PR${
+          fix.pr_number ? " #" + esc(fix.pr_number) : ""
+        } →</a>`;
+      }
+      if (fix.diff) {
+        html += `<pre class="diff">${diffHtml(fix.diff)}</pre>`;
+      }
+      return html;
+    }
+
+    // Colorea las líneas del diff (añadidas verde / borradas rojo).
+    function diffHtml(diff) {
+      return String(diff).split("\n").map((line) => {
+        const e = esc(line);
+        if (/^\+(?!\+\+)/.test(line)) return `<span class="add">${e}</span>`;
+        if (/^-(?!--)/.test(line)) return `<span class="del">${e}</span>`;
+        return e;
+      }).join("\n");
+    }
+
+    // Refresca el bloque de implementación de una tarjeta con un resultado nuevo.
+    function renderImpl(container, im) {
+      setStatus(container.querySelector(".impl-status"), im && im.status, implMsg(im));
+      container.querySelector(".impl-detail").innerHTML = implDetailHtml(im);
     }
 
     function cardHtml(r) {
@@ -294,10 +361,11 @@
     async function implement(e) {
       e.stopPropagation();
       const btn = e.currentTarget;
-      const id = btn.getAttribute("data-id");
-      const status = btn.parentElement.querySelector(".impl-status");
+      const container = btn.closest(".implement");
+      const id = container.getAttribute("data-id");
+      const status = container.querySelector(".impl-status");
       btn.disabled = true;
-      setStatus(status, "sending", "Enviando…");
+      setStatus(status, "sending", "Generando el fix… (puede tardar por el LLM)");
       try {
         const res = await fetch(
           "/api/reports/" + encodeURIComponent(id) + "/implement",
@@ -305,8 +373,7 @@
         );
         const data = await res.json();
         if (!res.ok || !data.ok) throw new Error(data.error || "HTTP " + res.status);
-        const impl = data.implementation || {};
-        setStatus(status, impl.status, impl.message || "Solicitud registrada.");
+        renderImpl(container, data.implementation);
       } catch (err) {
         setStatus(status, "failed", "Error: " + err.message);
       } finally {

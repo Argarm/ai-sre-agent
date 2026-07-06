@@ -4,6 +4,9 @@ reports/
 # Repos clonados para dar contexto de codigo al RCA (repo.js)
 work/
 
+# Repos clonados para generar el fix / abrir el PR (fix.js)
+work-fix/
+
 # Logs del servidor
 *.log
 
