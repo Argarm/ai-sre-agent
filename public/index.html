@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ai-sre-agent · Dashboard de informes RCA</title>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --surface: #191c26;
+      --surface-2: #212533;
+      --border: #2c313f;
+      --text: #e6e8ee;
+      --muted: #9aa1b1;
+      --accent: #6c8cff;
+      --sev-critical: #f0506e;
+      --sev-high: #ff9f43;
+      --sev-medium: #f5c451;
+      --sev-low: #4ecb8d;
+      --sev-null: #6b7280;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    .wrap { max-width: 960px; margin: 0 auto; padding: 32px 20px 64px; }
+    header {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+      margin-bottom: 24px;
+    }
+    h1 { font-size: 1.4rem; margin: 0 0 4px; font-weight: 650; }
+    .subtitle { color: var(--muted); font-size: .9rem; }
+    .count {
+      font-size: 2.6rem;
+      font-weight: 700;
+      line-height: 1;
+      color: var(--accent);
+    }
+    .count-label { color: var(--muted); font-size: .8rem; text-transform: uppercase; letter-spacing: .05em; }
+    .toolbar { display: flex; align-items: center; gap: 12px; }
+    button.refresh {
+      background: var(--surface-2);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 14px;
+      font-size: .85rem;
+      cursor: pointer;
+      transition: background .15s, border-color .15s;
+    }
+    button.refresh:hover { background: #2a2f40; border-color: var(--accent); }
+    button.refresh:disabled { opacity: .5; cursor: default; }
+
+    .list { display: flex; flex-direction: column; gap: 10px; }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    .row {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 14px 18px;
+      cursor: pointer;
+      user-select: none;
+    }
+    .row:hover { background: var(--surface-2); }
+    .chevron { color: var(--muted); width: 14px; flex: none; transition: transform .15s; }
+    .card.open .chevron { transform: rotate(90deg); }
+    .service { font-weight: 600; flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .time { color: var(--muted); font-size: .82rem; flex: none; }
+    .badge {
+      flex: none;
+      font-size: .7rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+      padding: 3px 9px;
+      border-radius: 999px;
+      color: #10121a;
+    }
+    .badge[data-sev="critical"] { background: var(--sev-critical); }
+    .badge[data-sev="high"]     { background: var(--sev-high); }
+    .badge[data-sev="medium"]   { background: var(--sev-medium); }
+    .badge[data-sev="low"]      { background: var(--sev-low); }
+    .badge[data-sev="null"]     { background: var(--sev-null); color: #e6e8ee; }
+
+    .detail { display: none; padding: 4px 18px 20px; border-top: 1px solid var(--border); }
+    .card.open .detail { display: block; }
+    .detail h3 {
+      font-size: .78rem; text-transform: uppercase; letter-spacing: .06em;
+      color: var(--muted); margin: 18px 0 8px;
+    }
+    .cause {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px 16px;
+    }
+    .cause-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+    .confidence {
+      font-weight: 700;
+      color: var(--accent);
+      font-variant-numeric: tabular-nums;
+    }
+    .cat {
+      font-size: .72rem;
+      color: var(--muted);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 2px 8px;
+      text-transform: lowercase;
+    }
+    .cause-text { font-weight: 500; }
+    .reasoning { color: var(--muted); font-size: .9rem; margin-top: 6px; }
+    .plan-grid { display: grid; grid-template-columns: 1fr; gap: 14px; }
+    @media (min-width: 720px) { .plan-grid { grid-template-columns: repeat(3, 1fr); } }
+    .plan-block {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px 14px;
+    }
+    .plan-block h4 { margin: 0 0 8px; font-size: .8rem; }
+    .plan-block ul { margin: 0; padding-left: 18px; }
+    .plan-block li { font-size: .88rem; margin-bottom: 6px; color: #d3d7e0; }
+    .plan-block li:last-child { margin-bottom: 0; }
+    .implement { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+    button.impl-btn {
+      background: var(--accent);
+      color: #0b1020;
+      border: none;
+      border-radius: 8px;
+      padding: 9px 16px;
+      font-size: .85rem;
+      font-weight: 650;
+      cursor: pointer;
+      transition: filter .15s;
+      flex: none;
+    }
+    button.impl-btn:hover { filter: brightness(1.08); }
+    button.impl-btn:disabled { opacity: .55; cursor: default; }
+    .impl-status { color: var(--muted); font-size: .85rem; }
+    .impl-status[data-state="pending"]   { color: var(--sev-medium); }
+    .impl-status[data-state="sending"]   { color: var(--accent); }
+    .impl-status[data-state="failed"]    { color: var(--sev-critical); }
+    .impl-status[data-state="pr_opened"] { color: var(--sev-low); }
+    .empty, .error {
+      text-align: center;
+      padding: 48px 20px;
+      color: var(--muted);
+      background: var(--surface);
+      border: 1px dashed var(--border);
+      border-radius: 12px;
+    }
+    .error { color: var(--sev-critical); border-color: var(--sev-critical); }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div>
+        <h1>Informes RCA</h1>
+        <div class="subtitle">ai-sre-agent · análisis de causas raíz</div>
+      </div>
+      <div class="toolbar">
+        <div style="text-align:right">
+          <div class="count" id="count">–</div>
+          <div class="count-label">informes generados</div>
+        </div>
+        <button class="refresh" id="refresh">Actualizar</button>
+      </div>
+    </header>
+
+    <div id="content" class="list"></div>
+  </div>
+
+  <script>
+    const $count = document.getElementById("count");
+    const $content = document.getElementById("content");
+    const $refresh = document.getElementById("refresh");
+
+    function esc(s) {
+      return String(s ?? "").replace(/[&<>"']/g, (c) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+      }[c]));
+    }
+
+    function fmtTime(iso) {
+      if (!iso) return "—";
+      const d = new Date(iso);
+      return isNaN(d) ? esc(iso) : d.toLocaleString();
+    }
+
+    function planBlock(title, items) {
+      const list = Array.isArray(items) ? items : [];
+      if (list.length === 0) return "";
+      return `<div class="plan-block"><h4>${esc(title)}</h4><ul>${
+        list.map((i) => `<li>${esc(i)}</li>`).join("")
+      }</ul></div>`;
+    }
+
+    function detailHtml(r) {
+      const tc = r.top_cause;
+      const causeHtml = tc
+        ? `<div class="cause">
+             <div class="cause-head">
+               <span class="confidence">${Math.round((tc.confidence || 0) * 100)}%</span>
+               ${tc.category ? `<span class="cat">${esc(tc.category)}</span>` : ""}
+             </div>
+             <div class="cause-text">${esc(tc.cause)}</div>
+             ${tc.reasoning ? `<div class="reasoning">${esc(tc.reasoning)}</div>` : ""}
+           </div>`
+        : `<div class="reasoning">Sin causas registradas.</div>`;
+
+      const ap = r.action_plan || {};
+      const planHtml = `<div class="plan-grid">
+          ${planBlock("Pasos de diagnóstico", ap.next_steps)}
+          ${planBlock("Mitigaciones rápidas", ap.quick_mitigations)}
+          ${planBlock("Datos a recolectar", ap.data_to_collect)}
+        </div>`;
+
+      return `<div class="detail">
+          <h3>Causa más probable</h3>
+          ${causeHtml}
+          <h3>Plan de acción</h3>
+          ${planHtml}
+          <h3>Implementación</h3>
+          ${implHtml(r)}
+        </div>`;
+    }
+
+    // Botón para decidir implementar el fix. La ejecución real llega más adelante;
+    // hoy el endpoint registra la decisión y responde su estado ("pending").
+    function implHtml(r) {
+      const im = r.implementation;
+      const state = im && im.status ? im.status : "";
+      const msg = im
+        ? esc(im.message || ("Estado: " + im.status))
+        : "Registra la decisión de implementar el fix. La ejecución automática llegará en una próxima iteración.";
+      return `<div class="implement">
+          <button type="button" class="impl-btn" data-id="${esc(r.id)}">Implementar fix</button>
+          <span class="impl-status" data-state="${esc(state)}">${msg}</span>
+        </div>`;
+    }
+
+    function cardHtml(r) {
+      const sev = r.severity || "null";
+      return `<div class="card" data-id="${esc(r.id)}">
+          <div class="row">
+            <span class="chevron">▶</span>
+            <span class="service">${esc(r.service)}</span>
+            <span class="time">${fmtTime(r.generated_at)}</span>
+            <span class="badge" data-sev="${esc(sev)}">${esc(r.severity || "n/a")}</span>
+          </div>
+          ${detailHtml(r)}
+        </div>`;
+    }
+
+    function render(reports) {
+      $count.textContent = reports.length;
+      if (reports.length === 0) {
+        $content.innerHTML = `<div class="empty">No hay informes todavía. Lanza un webhook y pulsa «Actualizar».</div>`;
+        return;
+      }
+      $content.innerHTML = reports.map(cardHtml).join("");
+      for (const card of $content.querySelectorAll(".card")) {
+        card.querySelector(".row").addEventListener("click", () => {
+          card.classList.toggle("open");
+        });
+      }
+      for (const btn of $content.querySelectorAll(".impl-btn")) {
+        btn.addEventListener("click", implement);
+      }
+    }
+
+    function setStatus(el, state, msg) {
+      if (!el) return;
+      el.setAttribute("data-state", state || "");
+      el.textContent = msg;
+    }
+
+    // Llama al endpoint del caso de uso "implementar fix" para el informe del botón.
+    async function implement(e) {
+      e.stopPropagation();
+      const btn = e.currentTarget;
+      const id = btn.getAttribute("data-id");
+      const status = btn.parentElement.querySelector(".impl-status");
+      btn.disabled = true;
+      setStatus(status, "sending", "Enviando…");
+      try {
+        const res = await fetch(
+          "/api/reports/" + encodeURIComponent(id) + "/implement",
+          { method: "POST" },
+        );
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(data.error || "HTTP " + res.status);
+        const impl = data.implementation || {};
+        setStatus(status, impl.status, impl.message || "Solicitud registrada.");
+      } catch (err) {
+        setStatus(status, "failed", "Error: " + err.message);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function load() {
+      $refresh.disabled = true;
+      try {
+        const res = await fetch("/api/reports");
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const reports = await res.json();
+        render(reports);
+      } catch (err) {
+        $count.textContent = "–";
+        $content.innerHTML = `<div class="error">No se pudieron cargar los informes: ${esc(err.message)}</div>`;
+      } finally {
+        $refresh.disabled = false;
+      }
+    }
+
+    $refresh.addEventListener("click", load);
+    load();
+  </script>
+</body>
+</html>

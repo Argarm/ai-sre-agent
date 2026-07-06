@@ -6,6 +6,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
+    "dashboard": "node dashboard.js",
     "test:webhook": "node scripts/send-test.js"
   },
   "engines": {
