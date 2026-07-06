@@ -67,12 +67,21 @@ acción** y un botón **«Implementar fix»**.
 
 ![Dashboard de informes RCA con una fila expandida: causa más probable, plan de acción y botón Implementar fix](docs/dashboard.png)
 
-Al pulsar **«Implementar fix»** el agente **genera el parche** del bug: clona el
-repo del informe, le pide al LLM **ediciones quirúrgicas** (bloques `old`/`new` de
-coincidencia exacta, que preservan docstrings y comentarios) y las aplica. Por
-defecto (sin `GITHUB_TOKEN`) corre en **dry-run** y muestra el **diff propuesto**
-sin tocar el remoto. Con un `GITHUB_TOKEN` con permiso de PR, **crea una rama,
-commitea, hace push y abre un Pull Request** (con revisión humana; **nunca**
+Al pulsar **«Implementar fix»** el agente **construye el parche** del bug en una
+**rama** con **dos commits atómicos** (Conventional Commits): primero un
+**`test:`** de regresión que reproduce el bug, luego el **`fix:`** del código
+productivo. Para cada uno le pide al LLM **ediciones quirúrgicas** (bloques
+`old`/`new` de coincidencia exacta, que preservan docstrings y comentarios).
+
+Como respaldo del cambio, verifica el **antes/después**: si detecta un runner de
+tests disponible (`npm`/`pytest`), ejecuta la suite y comprueba que el test
+**falla sin el fix** y **pasa con él** (rojo→verde). Si el runtime no está
+disponible, cae a **modo documentado**: crea los commits igualmente y lo deja
+constar en el PR para su confirmación en CI.
+
+Por defecto (sin `GITHUB_TOKEN`) corre en **dry-run** y muestra el **diff
+propuesto** (test + fix) sin tocar el remoto. Con un `GITHUB_TOKEN` con permiso de
+PR, **hace push y abre un Pull Request** (con revisión humana; **nunca**
 auto-merge). El resultado (diff o enlace al PR) queda persistido en el informe.
 
 Requiere que el informe tenga **contexto de código** (`code_context.repo`), es
@@ -102,6 +111,8 @@ Endpoints del dashboard:
 | `REPO_ALLOWED_HOSTS`| `github.com`         | Hosts permitidos para clonar/abrir PR.                  |
 | `FIX_WORKDIR`       | `./work-fix`         | Carpeta donde se clona el repo para el fix.             |
 | `FIX_GIT_NAME` / `FIX_GIT_EMAIL` | `ai-sre-agent` / `ai-sre-agent@localhost` | Autor del commit del fix. |
+| `FIX_TEST_RUN`      | `auto`               | `off` desactiva la ejecución de tests (solo modo documentado). |
+| `FIX_TEST_TIMEOUT_MS` | `120000`           | Timeout de la ejecución de la suite de tests.           |
 
 ## Respuesta
 
