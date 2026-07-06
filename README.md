@@ -66,7 +66,8 @@ fila se ve la **causa más probable** (la de mayor `confidence`), el **plan de
 acción** y un botón **«Implementar fix»**.
 
 Al pulsar **«Implementar fix»** el agente **genera el parche** del bug: clona el
-repo del informe, le pide al LLM el archivo corregido y aplica el cambio. Por
+repo del informe, le pide al LLM **ediciones quirúrgicas** (bloques `old`/`new` de
+coincidencia exacta, que preservan docstrings y comentarios) y las aplica. Por
 defecto (sin `GITHUB_TOKEN`) corre en **dry-run** y muestra el **diff propuesto**
 sin tocar el remoto. Con un `GITHUB_TOKEN` con permiso de PR, **crea una rama,
 commitea, hace push y abre un Pull Request** (con revisión humana; **nunca**
