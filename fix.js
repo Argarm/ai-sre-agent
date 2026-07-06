@@ -411,33 +411,40 @@ function clip(s, max = 4000) {
 
 // --- Apertura del Pull Request ----------------------------------------------
 
-// Crea rama, commitea el archivo, hace push con el token y abre el PR via API.
-// Devuelve { branch, pr_url, pr_number }. Lanza (con token depurado) si falla.
-export async function openPullRequest({
-  owner, repo, host, token, dir, baseBranch, file, pr_title, pr_body, explanation,
-}) {
+// Crea la rama del fix a partir de la rama base (donde apuntara el PR).
+export async function createFixBranch({ dir, token }) {
   const branch = `ai-sre-agent/fix-${Date.now().toString(36)}`;
-  const body =
-    (pr_body ? pr_body + "\n\n" : "") +
-    (explanation ? `**Cambio:** ${explanation}\n\n` : "") +
-    "_PR generado automaticamente por ai-sre-agent a partir de un informe RCA. " +
-    "Requiere revision humana; no se auto-mergea._";
-
   await git(dir, ["checkout", "-b", branch], token);
-  await git(dir, ["add", "--", file], token);
-  await git(
-    dir,
-    ["commit", "-m", pr_title, "-m", explanation || "fix automatico"],
-    token,
-  );
+  return branch;
+}
 
+// Commit ATOMICO: stagea SOLO las rutas dadas y las commitea con un asunto
+// Conventional Commits (+ cuerpo opcional). Cada llamada = un commit del historial.
+export async function commitPaths({ dir, paths, subject, body, token }) {
+  await git(dir, ["add", "--", ...paths], token);
+  const args = ["commit", "-m", subject];
+  if (body) args.push("-m", body);
+  await git(dir, args, token);
+  return (await git(dir, ["rev-parse", "HEAD"], token)).trim();
+}
+
+// Diff acumulado desde `fromRef` hasta HEAD (para mostrar test+fix juntos en dry-run).
+export async function diffSince({ dir, fromRef, token }) {
+  return git(dir, ["diff", fromRef, "HEAD"], token);
+}
+
+// Hace push de la rama ya commiteada y abre el PR via API.
+// Devuelve { pr_url, pr_number }. Lanza (con token depurado) si falla.
+export async function pushAndOpenPr({
+  owner, repo, host, token, dir, branch, baseBranch, pr_title, pr_body,
+}) {
   const pushUrl = `https://x-access-token:${token}@${host}/${owner}/${repo}.git`;
   await git(dir, ["push", pushUrl, `${branch}:${branch}`], token);
 
   const pr = await createPullRequestApi({
-    owner, repo, host, token, title: pr_title, head: branch, base: baseBranch, body,
+    owner, repo, host, token, title: pr_title, head: branch, base: baseBranch, body: pr_body,
   });
-  return { branch, pr_url: pr.html_url, pr_number: pr.number };
+  return { pr_url: pr.html_url, pr_number: pr.number };
 }
 
 // POST a la API REST de GitHub para crear el PR.
