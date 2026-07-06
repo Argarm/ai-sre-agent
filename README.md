@@ -65,6 +65,8 @@ Muestra la cantidad de informes generados y, por cada uno, el nombre de la API
 fila se ve la **causa más probable** (la de mayor `confidence`), el **plan de
 acción** y un botón **«Implementar fix»**.
 
+![Dashboard de informes RCA con una fila expandida: causa más probable, plan de acción y botón Implementar fix](docs/dashboard.png)
+
 Al pulsar **«Implementar fix»** el agente **genera el parche** del bug: clona el
 repo del informe, le pide al LLM **ediciones quirúrgicas** (bloques `old`/`new` de
 coincidencia exacta, que preservan docstrings y comentarios) y las aplica. Por
