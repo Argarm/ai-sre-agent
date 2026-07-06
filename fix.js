@@ -109,15 +109,7 @@ const FIX_SYSTEM = {
 // el resto del codigo, y produce diffs minimos.
 // Devuelve { file, new_content, edits, explanation, pr_title, pr_body } o lanza.
 export async function proposeFix({ report, dir, files }) {
-  const rca = JSON.stringify(
-    {
-      triage: report.triage,
-      probable_causes: report.probable_causes,
-      action_plan: report.action_plan,
-    },
-    null,
-    2,
-  );
+  const rca = rcaJson(report);
   const fileList = files.map((f) => f.path);
 
   // Paso 1: localizar el UNICO archivo a modificar (de la lista real).
@@ -231,6 +223,95 @@ export async function applyFix({ dir, file, new_content }) {
   await fs.writeFile(abs, new_content, "utf8");
   const diff = await git(dir, ["diff", "--", file]);
   return { changed: diff.trim().length > 0, diff };
+}
+
+// --- Test de regresion que respalda el fix ----------------------------------
+
+// Pide al LLM un TEST DE REGRESION que reproduzca el bug: debe FALLAR contra el
+// codigo actual (sin fix) y PASAR una vez aplicado el fix. Se le da el RCA, el
+// archivo productivo a corregir y un test existente como muestra de estilo/framework.
+// Devuelve { test_file, mode: "new"|"edit", content?, edits?, commit_subject, commit_body }.
+export async function proposeRegressionTest({ report, dir, files, fixFile }) {
+  const rca = rcaJson(report);
+  const fileList = files.map((f) => f.path);
+  const testPaths = fileList.filter((p) => /(^|\/)tests?\//i.test(p) || /(^|[._-])test/i.test(path.basename(p)));
+
+  const prodContent = await readClipped(safeJoin(dir, fixFile), 8000);
+  // Una muestra real de test del repo ancla framework, imports y convenciones.
+  let sample = "";
+  let sampleName = "";
+  for (const p of testPaths) {
+    const abs = safeJoin(dir, p);
+    const c = abs ? await readClipped(abs, 3000) : "";
+    if (c) { sample = c; sampleName = p; break; }
+  }
+
+  const proposed = await chatJson(
+    [
+      FIX_SYSTEM,
+      {
+        role: "user",
+        content:
+          "Escribe un TEST DE REGRESION que reproduzca el bug del RCA. El test DEBE " +
+          "fallar contra el codigo ACTUAL (todavia sin corregir) y pasar cuando se aplique el fix.\n" +
+          "Devuelve JSON:\n" +
+          '{ "test_file": "<ruta del archivo de test: reutiliza una existente para AÑADIR el caso, ' +
+          'o una ruta nueva coherente con la convencion del repo>",\n' +
+          '  "mode": "new" | "edit",\n' +
+          '  "content": "<archivo de test COMPLETO, solo si mode=new>",\n' +
+          '  "edits": [ { "old": "<fragmento EXACTO del test existente>", "new": "<reemplazo con el caso nuevo>" } ],\n' +
+          '  "commit_subject": "<conventional commit, p.ej. test: reproduce ...>",\n' +
+          '  "commit_body": "<1-2 frases: que comportamiento cubre>" }\n' +
+          "Reglas: usa el MISMO framework y estilo que la muestra. Si mode=edit, cada 'old' debe " +
+          "copiarse TAL CUAL (aparece una sola vez). No modifiques codigo productivo aqui, solo el test.\n\n" +
+          "RCA:\n" + rca +
+          `\n\nARCHIVO PRODUCTIVO A CORREGIR (${fixFile}):\n` + prodContent +
+          (sample ? `\n\nTEST EXISTENTE DE MUESTRA (${sampleName}):\n` + sample : "\n\n(No hay tests existentes de muestra.)"),
+      },
+    ],
+    { temperature: 0.1 },
+  );
+
+  const testFile = typeof proposed?.test_file === "string" ? proposed.test_file.trim() : "";
+  if (!testFile || !safeJoin(dir, testFile)) {
+    throw new Error(`el LLM propuso una ruta de test no valida: ${JSON.stringify(proposed?.test_file)}`);
+  }
+  const mode = proposed?.mode === "edit" ? "edit" : "new";
+  const subject = normalizeConventional(String(proposed?.commit_subject || "").trim(), "test", `añade test de regresion para ${fixFile}`);
+  return {
+    test_file: testFile,
+    mode,
+    content: typeof proposed?.content === "string" ? proposed.content : "",
+    edits: Array.isArray(proposed?.edits) ? proposed.edits : [],
+    commit_subject: subject,
+    commit_body: String(proposed?.commit_body || "").trim(),
+  };
+}
+
+// Materializa el test propuesto en el clon (crea el archivo o aplica las edits
+// sobre uno existente). Devuelve { changed, diff }.
+export async function applyRegressionTest({ dir, proposal }) {
+  const abs = safeJoin(dir, proposal.test_file);
+  if (!abs) throw new Error(`ruta de test no segura: ${proposal.test_file}`);
+
+  if (proposal.mode === "edit") {
+    if (proposal.edits.length === 0) throw new Error("el LLM no devolvio ediciones para el test existente");
+    const current = await fs.readFile(abs, "utf8");
+    await fs.writeFile(abs, applyEdits(current, proposal.edits), "utf8");
+  } else {
+    if (!proposal.content.trim()) throw new Error("el LLM no devolvio contenido para el test nuevo");
+    await fs.mkdir(path.dirname(abs), { recursive: true });
+    await fs.writeFile(abs, proposal.content, "utf8");
+  }
+
+  const diff = await git(dir, ["diff", "--", proposal.test_file]);
+  const staged = diff.trim().length > 0;
+  // Para archivos NUEVOS `git diff` no muestra nada hasta stagear: comprobamos con status.
+  if (!staged) {
+    const status = await git(dir, ["status", "--porcelain", "--", proposal.test_file]);
+    return { changed: status.trim().length > 0, diff: status };
+  }
+  return { changed: true, diff };
 }
 
 // --- Deteccion y ejecucion de la suite de tests -----------------------------
@@ -385,6 +466,40 @@ async function createPullRequestApi({ owner, repo, host, token, title, head, bas
 }
 
 // --- utilidades -------------------------------------------------------------
+
+// Serializa las partes del informe RCA que necesita el LLM para razonar el fix.
+function rcaJson(report) {
+  return JSON.stringify(
+    {
+      triage: report.triage,
+      probable_causes: report.probable_causes,
+      action_plan: report.action_plan,
+    },
+    null,
+    2,
+  );
+}
+
+// Lee un archivo y recorta a `max` chars para acotar el prompt. "" si no existe.
+async function readClipped(abs, max) {
+  if (!abs) return "";
+  try {
+    const c = await fs.readFile(abs, "utf8");
+    return c.length > max ? c.slice(0, max) + "\n… (recortado)" : c;
+  } catch {
+    return "";
+  }
+}
+
+// Garantiza que el asunto siga Conventional Commits del `type` dado. Si el LLM ya
+// devolvio un asunto con un prefijo valido (feat/fix/test/…), lo respeta; si no,
+// antepone `${type}: ` a un fallback. Recorta a 100 chars (cabecera recomendada).
+function normalizeConventional(subject, type, fallback) {
+  const s = (subject || "").split("\n")[0].trim();
+  const hasType = /^(feat|fix|test|refactor|chore|docs|perf|build|ci|style|revert)(\([^)]*\))?!?:\s/.test(s);
+  const out = s && hasType ? s : `${type}: ${s || fallback}`;
+  return out.slice(0, 100);
+}
 
 // Ejecuta git en el repo clonado; devuelve stdout. Depura el token de errores.
 async function git(dir, args, token) {
