@@ -99,8 +99,10 @@ const FIX_SYSTEM = {
     "Respondes EXCLUSIVAMENTE con el JSON que se te pide, sin texto extra.",
 };
 
-// Pide al LLM el archivo a corregir y su contenido completo corregido.
-// Devuelve { file, new_content, explanation, pr_title, pr_body } o lanza.
+// Pide al LLM el archivo a corregir y EDICIONES QUIRURGICAS (bloques old/new de
+// coincidencia exacta), no el archivo entero: preserva docstrings, comentarios y
+// el resto del codigo, y produce diffs minimos.
+// Devuelve { file, new_content, edits, explanation, pr_title, pr_body } o lanza.
 export async function proposeFix({ report, dir, files }) {
   const rca = JSON.stringify(
     {
@@ -140,19 +142,22 @@ export async function proposeFix({ report, dir, files }) {
   if (!abs) throw new Error(`ruta de archivo no segura: ${file}`);
   const current = await fs.readFile(abs, "utf8");
 
-  // Paso 2: generar el contenido completo corregido del archivo.
+  // Paso 2: pedir EDICIONES quirurgicas (bloques old/new), no el archivo entero.
   const patched = await chatJson(
     [
       FIX_SYSTEM,
       {
         role: "user",
         content:
-          "Corrige el bug descrito en el RCA modificando SOLO lo necesario en " +
-          "este archivo. Manten el resto del codigo intacto.\n" +
-          'Devuelve JSON: { "new_content": "<contenido COMPLETO del archivo corregido>", ' +
+          "Corrige el bug del RCA con el MINIMO de ediciones sobre este archivo.\n" +
+          'Devuelve JSON: { "edits": [ { "old": "<fragmento del archivo actual>", ' +
+          '"new": "<su reemplazo>" } ], ' +
           '"explanation": "<que cambiaste y por que, 1-3 frases>", ' +
           '"pr_title": "<titulo tipo conventional commit, p.ej. fix: ...>", ' +
-          '"pr_body": "<markdown breve describiendo el fix>" }.\n\n' +
+          '"pr_body": "<markdown breve describiendo el fix>" }.\n' +
+          "Reglas de 'old': copialo TAL CUAL del archivo (mismos espacios, indentacion " +
+          "y saltos de linea); debe aparecer UNA sola vez; incluye lo justo para ubicarlo " +
+          "sin ambiguedad. NO devuelvas el archivo completo. Usa varias ediciones si hace falta.\n\n" +
           "RCA:\n" + rca +
           `\n\nARCHIVO ${file} (contenido actual):\n` + current,
       },
@@ -160,19 +165,58 @@ export async function proposeFix({ report, dir, files }) {
     { temperature: 0.1 },
   );
 
-  const newContent =
-    typeof patched?.new_content === "string" ? patched.new_content : "";
-  if (!newContent.trim()) {
-    throw new Error("el LLM no devolvio 'new_content' valido");
+  const edits = Array.isArray(patched?.edits) ? patched.edits : [];
+  if (edits.length === 0) {
+    throw new Error("el LLM no devolvio ediciones ('edits') para el fix");
   }
+
+  // Aplicamos las ediciones por coincidencia EXACTA y UNICA (falla si no encaja):
+  // preferimos fallar claro antes que reescribir el archivo y perder contexto.
+  const newContent = applyEdits(current, edits);
 
   return {
     file,
     new_content: newContent,
+    edits: edits.length,
     explanation: String(patched.explanation || "").trim(),
     pr_title: String(patched.pr_title || `fix: corrige ${file}`).trim().slice(0, 120),
     pr_body: String(patched.pr_body || "").trim(),
   };
+}
+
+// Aplica ediciones { old, new } sobre el contenido, exigiendo que cada 'old'
+// aparezca EXACTAMENTE UNA vez. Normaliza los saltos de linea de old/new al EOL
+// del archivo, para no ensuciar el diff con cambios CRLF<->LF. Lanza si algun
+// fragmento no encaja o es ambiguo, o si el resultado no cambia nada.
+function applyEdits(content, edits) {
+  const eol = content.includes("\r\n") ? "\r\n" : "\n";
+  const toEol = (s) => s.replace(/\r\n/g, "\n").split("\n").join(eol);
+
+  let out = content;
+  edits.forEach((e, i) => {
+    if (!e || typeof e.old !== "string" || typeof e.new !== "string") {
+      throw new Error(`edicion ${i + 1} invalida: 'old' y 'new' deben ser strings`);
+    }
+    if (e.old === "") throw new Error(`edicion ${i + 1}: 'old' esta vacio`);
+
+    const oldS = toEol(e.old);
+    const newS = toEol(e.new);
+    const idx = out.indexOf(oldS);
+    if (idx === -1) {
+      throw new Error(
+        `edicion ${i + 1}: el fragmento 'old' no se encontro en el archivo (se requiere copia exacta)`,
+      );
+    }
+    if (out.indexOf(oldS, idx + oldS.length) !== -1) {
+      throw new Error(
+        `edicion ${i + 1}: el fragmento 'old' es ambiguo (aparece mas de una vez)`,
+      );
+    }
+    out = out.slice(0, idx) + newS + out.slice(idx + oldS.length);
+  });
+
+  if (out === content) throw new Error("las ediciones no cambian el archivo");
+  return out;
 }
 
 // Escribe el contenido corregido y devuelve el diff. changed=false si es igual.
