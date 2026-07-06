@@ -31,6 +31,11 @@ const CLONE_TIMEOUT_MS = Number(process.env.REPO_CLONE_TIMEOUT_MS || 60000);
 const GIT_AUTHOR_NAME = process.env.FIX_GIT_NAME || "ai-sre-agent";
 const GIT_AUTHOR_EMAIL = process.env.FIX_GIT_EMAIL || "ai-sre-agent@localhost";
 
+// Ejecucion de la suite de tests en el clon para verificar el "antes/despues".
+const TEST_TIMEOUT_MS = Number(process.env.FIX_TEST_TIMEOUT_MS || 120000);
+// auto: ejecuta si detecta runner disponible; off: nunca ejecuta (modo documentado).
+const TEST_RUN_MODE = (process.env.FIX_TEST_RUN || "auto").toLowerCase();
+
 // --- Parseo/validacion del repo ---------------------------------------------
 
 // Acepta la URL del repo (code_context.repo). Devuelve { owner, repo, host } o
@@ -226,6 +231,101 @@ export async function applyFix({ dir, file, new_content }) {
   await fs.writeFile(abs, new_content, "utf8");
   const diff = await git(dir, ["diff", "--", file]);
   return { changed: diff.trim().length > 0, diff };
+}
+
+// --- Deteccion y ejecucion de la suite de tests -----------------------------
+
+// Decide con que comando ejecutar los tests del repo clonado, en funcion de los
+// archivos presentes, y comprueba que el runtime este realmente disponible en
+// PATH. Devuelve { available, cmd, args, label, reason }. `available:false` NO es
+// un error: significa "no se pudo ejecutar aqui" -> se cae a modo documentado.
+export async function detectTestRunner({ dir, files }) {
+  if (TEST_RUN_MODE === "off") {
+    return { available: false, reason: "ejecucion de tests desactivada (FIX_TEST_RUN=off)" };
+  }
+  const paths = (files || []).map((f) => (typeof f === "string" ? f : f?.path)).filter(Boolean);
+  const has = (p) => paths.includes(p);
+  const some = (re) => paths.some((p) => re.test(p));
+
+  // Node: package.json con script "test" real (no el placeholder de npm init).
+  if (has("package.json")) {
+    let pkg = {};
+    try {
+      pkg = JSON.parse(await fs.readFile(safeJoin(dir, "package.json"), "utf8"));
+    } catch {
+      /* package.json ilegible: seguimos con las demas heuristicas */
+    }
+    const testScript = pkg?.scripts?.test;
+    const isPlaceholder = !testScript || /no test specified/i.test(testScript);
+    if (!isPlaceholder && (await commandWorks("npm", ["--version"]))) {
+      return { available: true, cmd: "npm", args: ["test", "--silent"], label: `npm test (${testScript})` };
+    }
+  }
+
+  // Python: pytest si hay marcadores de proyecto o tests con su convencion.
+  const looksPy =
+    has("pyproject.toml") || has("requirements.txt") || has("pytest.ini") ||
+    has("setup.cfg") || some(/(^|\/)tests?\/.*\.py$/i) || some(/(^|\/)test_[^/]+\.py$/i);
+  if (looksPy) {
+    if (await commandWorks("pytest", ["--version"])) {
+      return { available: true, cmd: "pytest", args: ["-q"], label: "pytest -q" };
+    }
+    if (await commandWorks("python", ["-m", "pytest", "--version"])) {
+      return { available: true, cmd: "python", args: ["-m", "pytest", "-q"], label: "python -m pytest -q" };
+    }
+    return { available: false, reason: "proyecto Python detectado pero pytest no esta en PATH" };
+  }
+
+  return { available: false, reason: "no se reconocio un runner de tests soportado (npm/pytest)" };
+}
+
+// Ejecuta el runner en el clon. NO lanza por tests en rojo: un exit != 0 es un
+// resultado legitimo. Clasifica en pass | fail | inconclusive (esto ultimo cuando
+// el fallo es del entorno -deps ausentes, import errors, timeout-, no del test).
+export async function runTests({ dir, runner }) {
+  if (!runner || !runner.available) {
+    return { ran: false, status: "inconclusive", output: "", reason: runner?.reason || "sin runner" };
+  }
+  try {
+    const { stdout, stderr } = await execFileP(runner.cmd, runner.args, {
+      cwd: dir,
+      timeout: TEST_TIMEOUT_MS,
+      windowsHide: true,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+    return { ran: true, status: "pass", code: 0, output: clip(stdout + stderr) };
+  } catch (err) {
+    const output = clip((err.stdout || "") + (err.stderr || "") + (err.stdout || err.stderr ? "" : err.message));
+    if (err.killed) {
+      return { ran: true, status: "inconclusive", output, reason: `timeout tras ${TEST_TIMEOUT_MS} ms` };
+    }
+    if (isEnvFailure(output)) {
+      return { ran: true, status: "inconclusive", output, reason: "fallo de entorno (dependencias/importacion)" };
+    }
+    return { ran: true, status: "fail", code: typeof err.code === "number" ? err.code : 1, output };
+  }
+}
+
+// Señales de que el fallo NO es un test en rojo sino un problema del entorno.
+function isEnvFailure(output) {
+  return /ModuleNotFoundError|No module named|ImportError|ERROR collecting|no tests ran|Cannot find module|missing script: test|command not found|is not recognized/i.test(
+    output,
+  );
+}
+
+// Comprueba que un comando existe y responde (p.ej. `--version`) sin lanzar.
+async function commandWorks(cmd, args) {
+  try {
+    await execFileP(cmd, args, { timeout: 15000, windowsHide: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function clip(s, max = 4000) {
+  const str = String(s || "");
+  return str.length > max ? str.slice(0, max) + "\n… (salida recortada)" : str;
 }
 
 // --- Apertura del Pull Request ----------------------------------------------
