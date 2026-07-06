@@ -35,6 +35,10 @@ const GIT_AUTHOR_EMAIL = process.env.FIX_GIT_EMAIL || "ai-sre-agent@localhost";
 const TEST_TIMEOUT_MS = Number(process.env.FIX_TEST_TIMEOUT_MS || 120000);
 // auto: ejecuta si detecta runner disponible; off: nunca ejecuta (modo documentado).
 const TEST_RUN_MODE = (process.env.FIX_TEST_RUN || "auto").toLowerCase();
+// En Windows npm es npm.cmd y Node no lo resuelve con execFile sin shell (y ademas
+// bloquea .cmd sin shell), asi que ese runner se invoca con shell:true.
+const IS_WIN = process.platform === "win32";
+const NPM = IS_WIN ? "npm.cmd" : "npm";
 
 // --- Parseo/validacion del repo ---------------------------------------------
 
@@ -338,8 +342,8 @@ export async function detectTestRunner({ dir, files }) {
     }
     const testScript = pkg?.scripts?.test;
     const isPlaceholder = !testScript || /no test specified/i.test(testScript);
-    if (!isPlaceholder && (await commandWorks("npm", ["--version"]))) {
-      return { available: true, cmd: "npm", args: ["test", "--silent"], label: `npm test (${testScript})` };
+    if (!isPlaceholder && (await commandWorks(NPM, ["--version"], IS_WIN))) {
+      return { available: true, cmd: NPM, args: ["test", "--silent"], shell: IS_WIN, label: `npm test (${testScript})` };
     }
   }
 
@@ -348,11 +352,11 @@ export async function detectTestRunner({ dir, files }) {
     has("pyproject.toml") || has("requirements.txt") || has("pytest.ini") ||
     has("setup.cfg") || some(/(^|\/)tests?\/.*\.py$/i) || some(/(^|\/)test_[^/]+\.py$/i);
   if (looksPy) {
-    if (await commandWorks("pytest", ["--version"])) {
-      return { available: true, cmd: "pytest", args: ["-q"], label: "pytest -q" };
+    if (await commandWorks("pytest", ["--version"], false)) {
+      return { available: true, cmd: "pytest", args: ["-q"], shell: false, label: "pytest -q" };
     }
-    if (await commandWorks("python", ["-m", "pytest", "--version"])) {
-      return { available: true, cmd: "python", args: ["-m", "pytest", "-q"], label: "python -m pytest -q" };
+    if (await commandWorks("python", ["-m", "pytest", "--version"], false)) {
+      return { available: true, cmd: "python", args: ["-m", "pytest", "-q"], shell: false, label: "python -m pytest -q" };
     }
     return { available: false, reason: "proyecto Python detectado pero pytest no esta en PATH" };
   }
@@ -368,11 +372,13 @@ export async function runTests({ dir, runner }) {
     return { ran: false, status: "inconclusive", output: "", reason: runner?.reason || "sin runner" };
   }
   try {
-    const { stdout, stderr } = await execFileP(runner.cmd, runner.args, {
+    const [cmd, args] = shellCmd(runner.cmd, runner.args, runner.shell);
+    const { stdout, stderr } = await execFileP(cmd, args, {
       cwd: dir,
       timeout: TEST_TIMEOUT_MS,
       windowsHide: true,
       maxBuffer: 10 * 1024 * 1024,
+      shell: !!runner.shell,
     });
     return { ran: true, status: "pass", code: 0, output: clip(stdout + stderr) };
   } catch (err) {
@@ -395,13 +401,21 @@ function isEnvFailure(output) {
 }
 
 // Comprueba que un comando existe y responde (p.ej. `--version`) sin lanzar.
-async function commandWorks(cmd, args) {
+async function commandWorks(cmd, args, shell) {
   try {
-    await execFileP(cmd, args, { timeout: 15000, windowsHide: true });
+    const [c, a] = shellCmd(cmd, args, shell);
+    await execFileP(c, a, { timeout: 15000, windowsHide: true, shell: !!shell });
     return true;
   } catch {
     return false;
   }
+}
+
+// Con shell:true Node concatena args sin escaparlos (DEP0190): como nuestros args
+// son estaticos, los unimos en la propia linea de comando y pasamos args vacio.
+// Sin shell, se mantiene la invocacion por array (sin shell -> sin inyeccion).
+function shellCmd(cmd, args, shell) {
+  return shell ? [[cmd, ...args].join(" "), []] : [cmd, args];
 }
 
 function clip(s, max = 4000) {
